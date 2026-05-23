@@ -6,7 +6,9 @@ using Toybox.Math;
 
 class RadarWarnApp extends Application.AppBase {
     var nearestRadarDistance as Float or Null = null;
-    var alreadyAlerted = false;
+    var alreadyAlerted as Boolean= false;
+    var lastUpdateTime as Number = 0;
+
 
     function initialize() {
         AppBase.initialize();
@@ -18,47 +20,78 @@ class RadarWarnApp extends Application.AppBase {
             System.println("Launched from glance");
         } else {
             System.println("Launched normally");
+            Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onLocationUpdate)); // Llama a onLocationUpdate de forma periódica con la ubicación actualizada
         }
-        Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onLocationUpdate)); // Llama a onLocationUpdate de forma periódica con la ubicación actualizada
+        
     }
-
+    
     function onLocationUpdate(info as Position.Info) as Void {
         if (info.accuracy == Position.QUALITY_NOT_AVAILABLE) {
             return;
         }
 
+        var now = System.getTimer(); // milisegundos
+        if (now - lastUpdateTime < 5000) {
+            return;
+        }
+        lastUpdateTime = now;
+
         var coords = info.position.toDegrees(); // [lat, lon]
         var myLat = coords[0] as Lang.Float;
         var myLon = coords[1] as Lang.Float;
+        System.println("Ubicación actual: " + myLat.toString() + ", " + myLon.toString());
         var nearRadar = false;
         var minDist = null;
-        for (var i = 0; i < RADAR_POINTS.size(); i++) {
-            var point = RADAR_POINTS[i]  as Lang.Array<Float>;
 
-            var radarLat = point[0] as Float;
-            var radarLon = point[1] as Float;
+        // ~0.009 grados ≈ 1km en latitud
+        // ~0.013 grados ≈ 1km en longitud (válido para España)
+        var LAT_UMBRAL = 0.045f; // 5 km en latitud
+        var LON_UMBRAL = 0.065f; // 5 km en longitud
+
+        for (var i = 0; i < RADAR_POINTS.size()/2; i++) {
+            var radarLat = RADAR_POINTS[i * 2]     as Float;
+            var radarLon = RADAR_POINTS[i * 2 + 1] as Float;
+
+            var dLat = radarLat - myLat;
+            if (dLat < 0.0f) { dLat = -dLat; }
+            if (dLat > LAT_UMBRAL) { continue; }
+
+            var dLon = radarLon - myLon;
+            if (dLon < 0.0f) { dLon = -dLon; }
+            if (dLon > LON_UMBRAL) { continue; }
 
             var dist = haversine(myLat, myLon, radarLat, radarLon);
-            if (minDist == null || dist < minDist) {
+            if (minDist == null || dist < minDist as Float) {
                 minDist = dist;
             }
 
-            if (dist < 1000.0) {
+            if (dist < 1000.0f) {
                 nearRadar = true;
             }
-            nearestRadarDistance = minDist;
-
-            if (nearRadar) {
-                if (!alreadyAlerted) {
-                    triggerAlert();
-                    alreadyAlerted = true;
-                }
-            } else {
-                alreadyAlerted = false;
-            }
-
-            WatchUi.requestUpdate();
         }
+        if (minDist == null) {
+            for (var i = 0; i < RADAR_POINTS.size(); i++) {
+                var radarLat = RADAR_POINTS[i * 2]     as Float;
+                var radarLon = RADAR_POINTS[i * 2 + 1] as Float;
+                var dist = haversine(myLat, myLon, radarLat, radarLon);
+                if (minDist == null || dist < (minDist as Float)) {
+                    minDist = dist;
+                }
+            }
+        }
+        nearestRadarDistance = minDist;
+
+        if (nearRadar) {
+            if (!alreadyAlerted) {
+                System.println("¡Radar cercano! Distancia: " + (minDist as Float).toString() + " metros");
+                triggerAlert();
+                alreadyAlerted = true;
+            }
+        } else {
+            alreadyAlerted = false;
+        }
+
+        WatchUi.requestUpdate();
     }
 
     function triggerAlert() as Void{
