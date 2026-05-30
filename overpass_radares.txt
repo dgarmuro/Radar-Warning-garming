@@ -1,0 +1,6 @@
+[out:json][timeout:25];
+(
+  node["highway"="speed_camera"](40.0,-4.5,41.0,-3.0);
+  node["enforcement"="maxspeed"](40.0,-4.5,41.0,-3.0);
+);
+out body;
