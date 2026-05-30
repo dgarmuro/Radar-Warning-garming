@@ -1,4 +1,6 @@
 import Toybox.Lang;
+using Toybox.Math;
+import Toybox.Position;
 
 var RADAR_POINTS as Array<Float> = [
     41.6192f, -0.9496f,
@@ -713,5 +715,173 @@ var RADAR_POINTS as Array<Float> = [
     39.233303f, -2.6594057f,
     39.04394f, -2.213175f,
     38.877346f, -1.324095f,
-    39.097126f, -1.8001007f
+    39.097126f, -1.8001007f,
+    38.811128f, -94.816598f
 ];
+
+var RADAR_GRID as Dictionary or Null = null;
+var GRID_SIZE = 0.05f; // aprox 5 km
+var gridBuilt = false;
+
+function floorInt(v as Float) as Number {
+    var i = v.toNumber();
+
+    // Monkey C trunca hacia 0, esto corrige valores negativos
+    if (v < 0.0f && v != i.toFloat()) {
+        i = i - 1;
+    }
+
+    return i;
+}
+
+function cellKeyFromCell(latCell as Number, lonCell as Number) as String {
+    return latCell.toString() + ":" + lonCell.toString();
+}
+
+function cellKey(lat as Float, lon as Float) as String {
+    var latCell = floorInt(lat / GRID_SIZE);
+    var lonCell = floorInt(lon / GRID_SIZE);
+
+    return cellKeyFromCell(latCell, lonCell);
+}
+
+// Ve los radares como una cuadricula y guarda sus índices en celdas en base a su latitud y longitud. Esto hace que la búsqueda de radares cercanos sea mucho más rápida.
+function buildRadarGrid() as Void {
+    RADAR_GRID = {};
+
+    var n = RADAR_POINTS.size() / 2;
+
+    for (var i = 0; i < n; i++) {
+        var lat = RADAR_POINTS[i * 2] as Float;
+        var lon = RADAR_POINTS[i * 2 + 1] as Float;
+
+        var key = cellKey(lat, lon);
+
+        var grid = RADAR_GRID as Dictionary;
+        var bucket = grid[key];
+
+        if (bucket == null) {
+            bucket = [];
+            grid[key] = bucket;
+        }
+
+        // Guardamos el índice del radar, no duplicamos lat/lon
+        (bucket as Array<Number>).add(i);
+    }
+
+    gridBuilt = true;
+}
+
+function haversine(lat1 as Float, lon1 as Float, lat2 as Float, lon2 as Float) as Float {
+        var earthRadius = 6371000.0; // metros
+
+        var dLat = degreesToRadians(lat2 - lat1);
+        var dLon = degreesToRadians(lon2 - lon1);
+
+        var rLat1 = degreesToRadians(lat1);
+        var rLat2 = degreesToRadians(lat2);
+
+        var a =
+            Math.sin(dLat / 2.0) * Math.sin(dLat / 2.0) +
+            Math.cos(rLat1) * Math.cos(rLat2) *
+            Math.sin(dLon / 2.0) * Math.sin(dLon / 2.0);
+
+        var c = 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+
+        return earthRadius * c;
+    }
+
+function degreesToRadians(degrees as Float) as Float {
+    return degrees * Math.PI / 180.0;
+}
+
+function findNearestRadarDistance(myLat as Float, myLon as Float) as Float or Null {
+    if (!gridBuilt || RADAR_GRID == null) {
+        buildRadarGrid();
+    }
+
+    var grid = RADAR_GRID as Dictionary;
+
+    var minDist = null;
+
+    var myLatCell = floorInt(myLat / GRID_SIZE);
+    var myLonCell = floorInt(myLon / GRID_SIZE);
+    // genera combinaciones -1,-1; -1,0; -1,1; 0,-1; 0,0; 0,1; 1,-1; 1,0; 1,1
+    for (var dLatCell = -1; dLatCell <= 1; dLatCell++) {
+        for (var dLonCell = -1; dLonCell <= 1; dLonCell++) {
+
+            var key = cellKeyFromCell(
+                myLatCell + dLatCell,
+                myLonCell + dLonCell
+            );
+
+            var bucket = grid[key];
+
+            if (bucket == null) {
+                continue;
+            }
+
+            var radarIndexes = bucket as Array<Number>;
+
+            for (var j = 0; j < radarIndexes.size(); j++) {
+                var radarIndex = radarIndexes[j];
+
+                var radarLat = RADAR_POINTS[radarIndex * 2] as Float;
+                var radarLon = RADAR_POINTS[radarIndex * 2 + 1] as Float;
+
+                // Filtro barato antes de haversine
+                var dLat = radarLat - myLat;
+                if (dLat < 0.0f) {
+                    dLat = -dLat;
+                }
+
+                if (dLat > 0.05f) {
+                    continue;
+                }
+
+                var dLon = radarLon - myLon;
+                if (dLon < 0.0f) {
+                    dLon = -dLon;
+                }
+
+                if (dLon > 0.07f) {
+                    continue;
+                }
+
+                var dist = haversine(myLat, myLon, radarLat, radarLon);
+
+                if (minDist == null || dist < (minDist as Float)) {
+                    minDist = dist;
+                }
+            }
+        }
+    }
+
+    return minDist;
+}
+
+function estimateGpsErrorMeters(acc as Number) as Float {
+    if (acc == Position.QUALITY_GOOD) {
+        return 15.0f;
+    }
+
+    if (acc == Position.QUALITY_USABLE) {
+        return 50.0f;
+    }
+
+    if (acc == Position.QUALITY_POOR) {
+        return 100.0f;
+    }
+
+    return 200.0f;
+}
+
+function conservativeDistance(dist as Float, gpsError as Float,RADAR_COORD_ERROR_M as Float) as Float {
+    var d = dist - gpsError - RADAR_COORD_ERROR_M;
+
+    if (d < 0.0f) {
+        return 0.0f;
+    }
+
+    return d;
+}
